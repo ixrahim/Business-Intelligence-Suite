@@ -19,10 +19,16 @@
     "web-vitals": "^2.1.4"
   },
   "scripts": {
-    "start": "react-scripts start",
-    "build": "react-scripts build",
-    "test": "react-scripts test",
-    "eject": "react-scripts eject"
+   "dev": "concurrently \"npm run server:dev\" \"npm run client:dev\"",
+    "build": "npm run client:build && npm run server:build",
+    "start": "npm run server:start",
+    "client:dev": "react-scripts start",
+    "client:build": "react-scripts build",
+    "server:dev": "cd server && npm run dev",
+    "server:build": "cd server && npm run build",
+    "server:start": "cd server && npm run start",
+    "compile:contracts": "cd server && compactc src/contracts/*.compact --output compiled/",
+    "demo": "npm run compile:contracts && npm run dev"
   },
   "eslintConfig": {
     "extends": [
