@@ -1,18 +1,24 @@
 pragma language_version >= 0.16 && <= 0.17;
+
 import CompactStandardLibrary;
 
 // Type definitions
+
 type Address = Bytes<32>;
 type ConsentID = Bytes<32>; 
 type DataRequestID = Bytes<32>; 
 
+
 // Consent record structure
+
+
 struct ConsentRecord {
     owner_id: Address,             
     data_request_id: DataRequestID,
     company_id: Address,           
     is_revoked: Boolean,           
     timestamp: Uint<64>,           
+
     data_hash: Bytes<32>,          // Store the hash for verification
 }
 
@@ -129,10 +135,12 @@ export circuit verify_consent_token(
     let maybe_record: Maybe<ConsentRecord> = consent_records.get(consent_id);
     
     if (maybe_record.isSome && !maybe_record.value.is_revoked) {
+
         return true;
     }
     return false;
 }
+
 
 // Enhanced verification with company check
 export circuit verify_consent_for_company(
@@ -277,4 +285,5 @@ export circuit verify_data_integrity(
                data_proof.owner_id == record.owner_id;
     }
     return false;
+
 }
