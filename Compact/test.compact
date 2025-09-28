@@ -1,77 +1,280 @@
 pragma language_version >= 0.16 && <= 0.17;
-
 import CompactStandardLibrary;
 
-
+// Type definitions
 type Address = Bytes<32>;
 type ConsentID = Bytes<32>; 
 type DataRequestID = Bytes<32>; 
 
-
+// Consent record structure
 struct ConsentRecord {
     owner_id: Address,             
     data_request_id: DataRequestID,
     company_id: Address,           
     is_revoked: Boolean,           
     timestamp: Uint<64>,           
+    data_hash: Bytes<32>,          // Store the hash for verification
 }
 
-
+// Public ledger for consent records
 export ledger consent_records: Map<ConsentID, ConsentRecord>; 
 
+// Counter for generating unique consent IDs
+export ledger consent_counter: Uint<64>;
 
+// Track consents by company for efficient querying
+export ledger company_consents: Map<Address, Array<ConsentID, 1000>>;
 
+// Track consents by user for efficient querying  
+export ledger user_consents: Map<Address, Array<ConsentID, 1000>>;
+
+// Zero-knowledge proof circuit for private data
 circuit PrivateDataProof {
-    witness raw_user_data: Bytes<256>;
-
-    public expected_hash: Bytes<32>;
-
-    require(persistentHash(raw_user_data) == expected_hash);   
+    witness raw_user_data: Bytes<256>;     // Private: actual user data
+    public expected_hash: Bytes<32>;       // Public: hash of the data
+    public owner_id: Address;              // Public: who owns this data
+    
+    // Verify the data hash matches
+    require(persistentHash(raw_user_data) == expected_hash);
 }
 
+// Zero-knowledge proof circuit for user authentication
+circuit UserAuthProof {
+    witness user_secret: Bytes<32>;        // Private: user's secret key
+    public user_id: Address;               // Public: user's address
+    
+    // Verify the user knows their secret (user_id = hash(user_secret))
+    require(persistentHash(user_secret) == user_id);
+}
 
-// for generating consent token (Write/State-Changing)
+// For generating consent token (Write/State-Changing)
 export circuit mint_consent_token(
     data_request_id: DataRequestID,
     company_id: Address, 
-    private_data_hash: Bytes<32>, // Public input to the ZK Proof
-    proof: PrivateDataProof 
+    private_data_hash: Bytes<32>,      // Public input to the ZK Proof
+    proof: PrivateDataProof            // ZK proof of data ownership
 ) -> ConsentID {
-    // circuit persistentHash<T>(value: T): Bytes<32>;
-    //circuit mintToken(
-    // domainSep: Bytes<32>,
-    // value: Uint<128>,
-    // nonce: Bytes<32>,
-    // recipient: Either<ZswapCoinPublicKey, ContractAddress>
-    // ): CoinInfo;
-    // verify proof contain information
-    // Generate Consent ID using the user data 
-    // you can use 'persistenhash'
-    // Store new consent ID (is_revoked =  False)
-    // Return Consent ID
+    
+    // 1. Verify the zero-knowledge proof
+    // This ensures the caller actually owns the data they're giving consent for
+    require(proof.expected_hash == private_data_hash, "Data hash mismatch");
+    
+    // 2. Generate unique consent ID
+    // Use persistent hash with multiple inputs for uniqueness
+    let current_time = block_time();
+    let current_counter = consent_counter;
+    
+    let consent_seed = persistentHash((
+        proof.owner_id,
+        data_request_id, 
+        company_id,
+        private_data_hash,
+        current_counter,
+        current_time
+    ));
+    
+    let consent_id: ConsentID = persistentHash(consent_seed);
+    
+    // 3. Ensure consent ID doesn't already exist (safety check)
+    let existing_record = consent_records.get(consent_id);
+    require(existing_record.isNone, "Consent ID collision - please retry");
+    
+    // 4. Create new consent record
+    let new_record = ConsentRecord {
+        owner_id: proof.owner_id,
+        data_request_id: data_request_id,
+        company_id: company_id,
+        is_revoked: false,              // Initially not revoked
+        timestamp: current_time,
+        data_hash: private_data_hash
+    };
+    
+    // 5. Store new consent record in ledger
+    consent_records = consent_records.set(consent_id, new_record);
+    
+    // 6. Update tracking arrays for efficient queries
+    update_consent_tracking(consent_id, proof.owner_id, company_id);
+    
+    // 7. Increment counter for next unique ID generation
+    consent_counter = current_counter + 1;
+    
+    // 8. Return the generated consent ID
+    return consent_id;
 }
 
-// for verifying consent token (Read/View)
+// Helper circuit to update consent tracking arrays
+circuit update_consent_tracking(
+    consent_id: ConsentID,
+    owner_id: Address, 
+    company_id: Address
+) -> [] {
+    
+    // Add to company's consent list
+    let company_list = company_consents.get(company_id).unwrap_or(Array::new());
+    let updated_company_list = company_list.push(consent_id);
+    company_consents = company_consents.set(company_id, updated_company_list);
+    
+    // Add to user's consent list  
+    let user_list = user_consents.get(owner_id).unwrap_or(Array::new());
+    let updated_user_list = user_list.push(consent_id);
+    user_consents = user_consents.set(owner_id, updated_user_list);
+}
+
+// For verifying consent token (Read/View)
 export circuit verify_consent_token(
     consent_id: ConsentID
 ) -> Boolean {
-    let maybe_record :  Maybe<ConsentRecord> = consent_record.get(consent_id);
-
-    if (maybe_record.isome && !maybe_record.value.is_revoked) {
+    
+    // Fixed typo: consent_records instead of consent_record
+    let maybe_record: Maybe<ConsentRecord> = consent_records.get(consent_id);
+    
+    if (maybe_record.isSome && !maybe_record.value.is_revoked) {
         return true;
     }
     return false;
 }
 
+// Enhanced verification with company check
+export circuit verify_consent_for_company(
+    consent_id: ConsentID,
+    company_id: Address
+) -> Boolean {
+    
+    let maybe_record = consent_records.get(consent_id);
+    
+    if (maybe_record.isSome) {
+        let record = maybe_record.value;
+        return !record.is_revoked && record.company_id == company_id;
+    }
+    return false;
+}
 
-// for revoking consent (Write/State-Changing)
+// For revoking consent (Write/State-Changing)
 export circuit revoke_consent(
-    consent_id: ConsentID
+    consent_id: ConsentID,
+    user_auth_proof: UserAuthProof      // ZK proof that caller owns the consent
 ) -> [] {
-    let maybe_record : Maybe<ConsentRecord> = consent_record.get(consent_id)
-    require(maybe_record.isSome,"Consent Id not found.");
-    let mut record :  ConsentRecord = maybe_record.value;
-    require(msg.sender == record.owner_id, "Only the record own can revoke the consent")
+    
+    // 1. Check if consent record exists
+    let maybe_record = consent_records.get(consent_id);
+    require(maybe_record.isSome, "Consent ID not found");
+    
+    let mut record = maybe_record.value;
+    
+    // 2. Verify the caller owns this consent using ZK proof
+    // Instead of msg.sender, we use ZK proof for authentication
+    require(user_auth_proof.user_id == record.owner_id, 
+            "Only the consent owner can revoke");
+    
+    // 3. Check if already revoked
+    require(!record.is_revoked, "Consent already revoked");
+    
+    // 4. Update record to revoked status
     record.is_revoked = true;
-    consent_records.set(consent_id, record);
+    
+    // 5. Store updated record
+    consent_records = consent_records.set(consent_id, record);
+}
+
+// Get consent details (Read/View)
+export circuit get_consent_details(
+    consent_id: ConsentID
+) -> Maybe<ConsentRecord> {
+    return consent_records.get(consent_id);
+}
+
+// Get all consents for a company (Read/View)
+export circuit get_company_consents(
+    company_id: Address
+) -> Array<ConsentID, 1000> {
+    return company_consents.get(company_id).unwrap_or(Array::new());
+}
+
+// Get all consents for a user (Read/View)  
+export circuit get_user_consents(
+    user_id: Address
+) -> Array<ConsentID, 1000> {
+    return user_consents.get(user_id).unwrap_or(Array::new());
+}
+
+// Check if user has given consent for specific data to specific company
+export circuit has_valid_consent(
+    user_id: Address,
+    company_id: Address,
+    data_hash: Bytes<32>
+) -> Boolean {
+    
+    let user_consent_list = user_consents.get(user_id).unwrap_or(Array::new());
+    
+    // Iterate through user's consents to find matching one
+    for i in 0..user_consent_list.length() {
+        let consent_id = user_consent_list[i];
+        let maybe_record = consent_records.get(consent_id);
+        
+        if (maybe_record.isSome) {
+            let record = maybe_record.value;
+            if (record.company_id == company_id && 
+                record.data_hash == data_hash && 
+                !record.is_revoked) {
+                return true;
+            }
+        }
+    }
+    return false;
+}
+
+// Batch revoke all consents for a user (GDPR "right to be forgotten")
+export circuit revoke_all_user_consents(
+    user_id: Address,
+    user_auth_proof: UserAuthProof
+) -> Uint<32> {
+    
+    // Verify user authentication
+    require(user_auth_proof.user_id == user_id, "Invalid user authentication");
+    
+    let user_consent_list = user_consents.get(user_id).unwrap_or(Array::new());
+    let mut revoked_count: Uint<32> = 0;
+    
+    // Revoke all non-revoked consents
+    for i in 0..user_consent_list.length() {
+        let consent_id = user_consent_list[i];
+        let maybe_record = consent_records.get(consent_id);
+        
+        if (maybe_record.isSome) {
+            let mut record = maybe_record.value;
+            if (!record.is_revoked) {
+                record.is_revoked = true;
+                consent_records = consent_records.set(consent_id, record);
+                revoked_count = revoked_count + 1;
+            }
+        }
+    }
+    
+    return revoked_count;
+}
+
+// Initialize the contract (called once during deployment)
+export circuit initialize() -> [] {
+    consent_counter = 0;
+}
+
+// Get total number of consents in the system
+export circuit get_total_consents() -> Uint<64> {
+    return consent_counter;
+}
+
+// Verify data integrity for a consent
+export circuit verify_data_integrity(
+    consent_id: ConsentID,
+    data_proof: PrivateDataProof
+) -> Boolean {
+    
+    let maybe_record = consent_records.get(consent_id);
+    
+    if (maybe_record.isSome) {
+        let record = maybe_record.value;
+        return data_proof.expected_hash == record.data_hash && 
+               data_proof.owner_id == record.owner_id;
+    }
+    return false;
 }
