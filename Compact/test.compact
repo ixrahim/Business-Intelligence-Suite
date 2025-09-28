@@ -1,0 +1,77 @@
+pragma language_version >= 0.16 && <= 0.17;
+
+import CompactStandardLibrary;
+
+
+type Address = Bytes<32>;
+type ConsentID = Bytes<32>; 
+type DataRequestID = Bytes<32>; 
+
+
+struct ConsentRecord {
+    owner_id: Address,             
+    data_request_id: DataRequestID,
+    company_id: Address,           
+    is_revoked: Boolean,           
+    timestamp: Uint<64>,           
+}
+
+
+export ledger consent_records: Map<ConsentID, ConsentRecord>; 
+
+
+
+circuit PrivateDataProof {
+    witness raw_user_data: Bytes<256>;
+
+    public expected_hash: Bytes<32>;
+
+    require(persistentHash(raw_user_data) == expected_hash);   
+}
+
+
+// for generating consent token (Write/State-Changing)
+export circuit mint_consent_token(
+    data_request_id: DataRequestID,
+    company_id: Address, 
+    private_data_hash: Bytes<32>, // Public input to the ZK Proof
+    proof: PrivateDataProof 
+) -> ConsentID {
+    // circuit persistentHash<T>(value: T): Bytes<32>;
+    //circuit mintToken(
+    // domainSep: Bytes<32>,
+    // value: Uint<128>,
+    // nonce: Bytes<32>,
+    // recipient: Either<ZswapCoinPublicKey, ContractAddress>
+    // ): CoinInfo;
+    // verify proof contain information
+    // Generate Consent ID using the user data 
+    // you can use 'persistenhash'
+    // Store new consent ID (is_revoked =  False)
+    // Return Consent ID
+}
+
+// for verifying consent token (Read/View)
+export circuit verify_consent_token(
+    consent_id: ConsentID
+) -> Boolean {
+    let maybe_record :  Maybe<ConsentRecord> = consent_record.get(consent_id);
+
+    if (maybe_record.isome && !maybe_record.value.is_revoked) {
+        return true;
+    }
+    return false;
+}
+
+
+// for revoking consent (Write/State-Changing)
+export circuit revoke_consent(
+    consent_id: ConsentID
+) -> [] {
+    let maybe_record : Maybe<ConsentRecord> = consent_record.get(consent_id)
+    require(maybe_record.isSome,"Consent Id not found.");
+    let mut record :  ConsentRecord = maybe_record.value;
+    require(msg.sender == record.owner_id, "Only the record own can revoke the consent")
+    record.is_revoked = true;
+    consent_records.set(consent_id, record);
+}
