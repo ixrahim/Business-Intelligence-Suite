@@ -27,7 +27,7 @@
     "server:dev": "cd server && npm run dev",
     "server:build": "cd server && npm run build",
     "server:start": "cd server && npm run start",
-    "compile:contracts": "cd server && compactc src/contracts/*.compact --output compiled/",
+    "compile:contracts": "compactc contracts/*.compact --output compiled/ --typescript-out src/types/",
     "demo": "npm run compile:contracts && npm run dev"
   },
   "eslintConfig": {
