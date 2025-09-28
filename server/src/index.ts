@@ -6,6 +6,7 @@ import { config, isDevelopment } from './config';
 import benchmarkRoutes from './routes/benchmarks';
 import proofRoutes from './routes/proofs';
 import industryRoutes from './routes/industries';
+import authConsentRoutes from './routes/authConsent';
 import { errorHandler, notFound } from './middleware/errorHandler';
 
 const app = express();
@@ -40,6 +41,7 @@ app.get('/health', (req, res) => {
 app.use('/api/benchmarks', benchmarkRoutes);
 app.use('/api/proofs', proofRoutes);
 app.use('/api/industries', industryRoutes);
+app.use('/api', authConsentRoutes);
 
 // Error handling
 app.use(notFound);
